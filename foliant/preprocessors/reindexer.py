@@ -20,6 +20,7 @@ from foliant.preprocessors.base import BasePreprocessor
 class Preprocessor(BasePreprocessor):
     defaults = {
         'reindexer_url': 'http://127.0.0.1:9088/',
+        'insert_max_bytes': 0,
         'database': '',
         'namespace': '',
         'namespace_renamed': '',
@@ -43,6 +44,9 @@ class Preprocessor(BasePreprocessor):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        if self.options['insert_max_bytes'] < 1024:
+            self.options['insert_max_bytes'] = float('inf')
 
         self._db_endpoint = f'{self.options["reindexer_url"].rstrip("/")}/api/v1/db'
 
@@ -336,7 +340,7 @@ class Preprocessor(BasePreprocessor):
                     "index_type": "-"
                 },
                 {
-                    "name": "full_content",
+                    "name": "indexed_content",
                     "json_paths": [
                         "title",
                         "content"
@@ -395,7 +399,9 @@ class Preprocessor(BasePreprocessor):
 
             markdown_files_paths = self.working_dir.rglob('*.md')
 
-        items_to_insert = ''
+        requests_bodies = []
+        request_body = b''
+        body_size = 0
 
         for markdown_file_path in markdown_files_paths:
             self.logger.debug(f'Processing the file: {markdown_file_path}')
@@ -435,48 +441,124 @@ class Preprocessor(BasePreprocessor):
 
                 self.logger.debug(f'Adding new item, URL: {url}, title: {title}')
 
-                items_to_insert += json.dumps(
-                    {
-                        'url': url,
-                        'title': title,
-                        'content': content
-                    },
-                    ensure_ascii=False
+                def _prepare_item(url: str, title: str, content: str) -> bytes:
+                    return json.dumps(
+                        {
+                            'url': url,
+                            'title': title,
+                            'content': content
+                        },
+                        ensure_ascii=False
+                    ).encode('utf-8')
+
+                item = _prepare_item(url, title, content)
+
+                self.logger.debug(
+                    'Maximum data size of items that can be inserted with a single API request: ' +
+                    f'{self.options["insert_max_bytes"]} bytes'
                 )
 
-            else:
-                self.logger.debug('It seems that the file has no content')
+                if self.options['insert_max_bytes'] < float('inf'):
+                    item_size = len(item)
 
-        self.logger.debug(f'Items to insert as JSON string: {items_to_insert}')
+                    if item_size > self.options['insert_max_bytes']:
+                        self.logger.warning(
+                            f'Item size exceeds limit per request: {item_size} bytes, URL key: {url}'
+                        )
+
+                        encoded_content = content.encode('utf-8')
+                        content_size = len(encoded_content)
+                        remaining_item_size = item_size - content_size
+
+                        if remaining_item_size >= self.options['insert_max_bytes']:
+                            self.logger.warning(
+                                'Item size excluding content also exceeds limit: ' +
+                                f'{prepared_item_remaining_size} bytes, skipping'
+                            )
+
+                            continue
+
+                        else:
+                            trimmed_content_max_size = self.options['insert_max_bytes'] - remaining_item_size
+
+                            self.logger.warning(
+                                f'Content must be trimmed to maximum {trimmed_content_max_size} bytes'
+                            )
+
+                            trailing_byte_index = trimmed_content_max_size
+
+                            while trailing_byte_index > 0 and not (
+                                (encoded_content[trailing_byte_index] & 0xC0) != 0x80
+                            ):
+                                trailing_byte_index -= 1
+
+                            trimmed_content = encoded_content[:trailing_byte_index].decode('utf-8')
+
+                            if not trimmed_content:
+                                self.logger.warning(
+                                    'Content can only be trimmed to an empty string, skipping'
+                                )
+
+                                continue
+
+                            item = _prepare_item(url, title, trimmed_content)
+                            item_size = len(item)
+
+                    if body_size + item_size > self.options['insert_max_bytes']:
+                        self.logger.debug(
+                            f'Size of items that are included into a single request: {body_size} bytes, ' +
+                            f'current item size: {item_size} bytes. ' +
+                            f'One more request will be used'
+                        )
+
+                        requests_bodies.append(request_body)
+                        request_body = b''
+                        body_size = 0
+
+                    body_size += item_size
+
+                request_body += item
+
+            else:
+                self.logger.debug('It seems that the file has no content, skipping')
+
+        if request_body:
+            requests_bodies.append(request_body)
+
+        requests_count = len(requests_bodies)
 
         request_url = f'{self._db_endpoint}/{self.options["database"]}/namespaces/{self.options["namespace"]}/items'
-
-        self.logger.debug(f'Requesting Reindexer API to insert new items, URL: {request_url}')
-
-        response = self._http_request(
-            request_url,
-            'POST',
-            {
-                'Content-Type': 'application/json; charset=utf-8'
-            },
-            items_to_insert.encode('utf-8')
+        self.logger.debug(
+            f'Performing {requests_count} request(s) to Reindexer API to insert new items, URL: {request_url}'
         )
 
-        response_data = json.loads(response['data'].decode('utf-8'))
+        for index, request_body in enumerate(requests_bodies):
+            self.logger.debug(f'Request {index + 1} of {requests_count}')
 
-        self.logger.debug(f'Response received, status: {response["status"]}')
-        self.logger.debug(f'Response headers: {response["headers"]}')
-        self.logger.debug(f'Response data: {response_data}')
+            response = self._http_request(
+                request_url,
+                'POST',
+                {
+                    'Content-Type': 'application/json; charset=utf-8'
+                },
+                request_body
+            )
 
-        if response['status'] != 200:
-            error_message = 'Failed to insert new content items into namespace'
-            self.logger.error(f'{error_message}')
-            raise RuntimeError(f'{error_message}')
+            response_data = json.loads(response['data'].decode('utf-8'))
 
-        items_updated = response_data.get('updated', None)
+            self.logger.debug(f'Response received, status: {response["status"]}')
+            self.logger.debug(f'Response headers: {response["headers"]}')
+            self.logger.debug(f'Response data: {response_data}')
 
-        if items_updated:
-            self.logger.debug(f'Items updated: {items_updated}')
+            if response['status'] != 200:
+                error_message = 'Failed to insert new content items into namespace'
+                self.logger.error(f'{error_message}')
+                raise RuntimeError(f'{error_message}')
+
+            items_updated = response_data.get('updated', None)
+
+            if items_updated:
+                self.logger.debug(f'Items updated: {items_updated}')
 
         return None
 

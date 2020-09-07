@@ -35,6 +35,7 @@ preprocessors:
         database: ''
         namespace: ''
         namespace_renamed: ''
+        fulltext_config: {}
         actions:
             - drop_database
             - create_database
@@ -55,7 +56,7 @@ preprocessors:
 :   URL of your Reindexer instance. “Root” server URL should be used here, do not add any endpoints such as `/api/v1/db` to it.
 
 `insert_max_bytes`
-:   Reindexer itself or a proxy server may limit the available size of request body. Use this option, if it’s needed to split a large amount of content for indexing into several chunks, so each of them will be sent in a separate request.
+:   Reindexer itself or a proxy server may limit the available size of request body. Use this option, if it’s needed to split a large amount of content for indexing into several chunks, so each of them will be sent in a separate request. The value of this option represents maximum size of HTTP POST request body in bytes. Allowed values are positive integers starting from `1024`, and `0` (default) meaning no limits.
 
 `database`
 :   Name of the database that is used to store your search index.
@@ -65,6 +66,9 @@ preprocessors:
 
 `namespace_renamed`
 :   New namespace name to be applied if the `rename` option is used; see below.
+
+`fulltext_config`
+:   The value of the `config` field that refers to the description of the composite fulltext index over the `title` and `content` data fields. Used data structure is described below. [Fulltext indexes config options](https://github.com/Restream/reindexer/blob/master/cpp_src/server/contrib/server.md#fulltextconfig) are listed in the Reindexer’s official documentation.
 
 `actions`
 :   Sequence of actions that the preprocessor should to perform. Available item values are:
@@ -131,6 +135,6 @@ The [simple client-side Web application example](https://github.com/foliant-docs
 
 To learn how to write efficient queries to Reindexer, you may need to refer to its official documentation on topics: [general use](https://github.com/Restream/reindexer/blob/master/readme.md), [fulltext search](https://github.com/Restream/reindexer/blob/master/fulltext.md), [HTTP REST API](https://github.com/Restream/reindexer/blob/master/cpp_src/server/contrib/server.md).
 
-In the example above, the `indexed_content` field corresponds to the composite index over two fields: `title` and `content` (this index is generated when the namespace is created by the request from the preprocessor). [Text of the search query](https://github.com/Restream/reindexer/blob/master/fulltext.md#text-query-format) starts with `@title^3` that means that the `title` field of the composite index has triple weight. Also the example uses the `snippet()` [select function](https://github.com/Restream/reindexer/blob/master/fulltext.md#using-select-fucntions) to highlight the text that matches the query and to cut off excess.
+In the example above, the `indexed_content` field corresponds to the composite index over two fields: `title` and `content` (this index is generated when the namespace is created by the request from the preprocessor). [Text of the search query](https://github.com/Restream/reindexer/blob/master/fulltext.md#text-query-format) starts with `@title^3,content^1` that means that the `title` field of the composite index has triple priority (i.e. weighting factor of 3), and the `content` field has normal priority (i.e. weight coefficient equals to 1). Also the example uses the `snippet()` [select function](https://github.com/Restream/reindexer/blob/master/fulltext.md#using-select-fucntions) to highlight the text that matches the query and to cut off excess.
 
 If you use self-hosted instance of Reindexer, you may need to configure a proxy to append [CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) headers to HTTP API responses.

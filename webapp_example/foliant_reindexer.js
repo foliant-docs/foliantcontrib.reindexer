@@ -16,7 +16,7 @@ function performSearch(textToSearch) {
             {
                 "field": "indexed_content",
                 "cond": "EQ",
-                "value": "@title^3 " + textToSearch
+                "value": "@title^3,content^1 " + textToSearch
             }
         ],
         "select_functions": [

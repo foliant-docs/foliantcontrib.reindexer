@@ -122,7 +122,7 @@ The [simple client-side Web application example](https://github.com/foliant-docs
         {
             "field": "indexed_content",
             "cond": "EQ",
-            "value": "@title^3 foliant"
+            "value": "@title^3,content^1 foliant"
         }
     ],
     "select_functions": [

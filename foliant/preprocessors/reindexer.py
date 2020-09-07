@@ -24,6 +24,7 @@ class Preprocessor(BasePreprocessor):
         'database': '',
         'namespace': '',
         'namespace_renamed': '',
+        'fulltext_config': {},
         'actions': [
             'drop_database',
             'create_database',
@@ -346,7 +347,8 @@ class Preprocessor(BasePreprocessor):
                         "content"
                     ],
                     "field_type": "composite",
-                    "index_type": "text"
+                    "index_type": "text",
+                    "config": self.options['fulltext_config']
                 }
             ]
         }

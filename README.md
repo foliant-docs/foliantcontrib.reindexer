@@ -1,3 +1,5 @@
+[![](https://img.shields.io/pypi/v/foliantcontrib.reindexer.svg)](https://pypi.org/project/foliantcontrib.reindexer/) [![](https://img.shields.io/github/v/tag/foliant-docs/foliantcontrib.reindexer.svg?label=GitHub)](https://github.com/foliant-docs/foliantcontrib.reindexer)
+
 # Reindexer Integration Extension
 
 This extension allows to integrate Foliant-managed documentation projects with the in-memory DBMS [Reindexer](https://github.com/Restream/reindexer/) to use it as a fulltext search engine.
@@ -73,13 +75,13 @@ preprocessors:
 `actions`
 :   Sequence of actions that the preprocessor should to perform. Available item values are:
 
-    * `drop_database`—fully remove the database that is specified as the value of the `database` option. Please be careful using this action when the single database is used to store multiple namespaces. Since this action is included to the default actions list, it’s recommended to use separate databases for each search index. The default list of actions assumes that in most cases it’s needed to remove and then fully rebuild the index, and wherein the database and the namespace may not exist;
-    * `create_database`—create the new database with the name specified as the `database` option value;
-    * `drop_namespace`—delete the namespace that is specified as the `namespace` option value. All `*_namespace` actions are applied to the existing database with the name from the `database` option;
-    * `truncate_namespace`—remove all items from the namespace that is specified as the `namespace` option value, but keep the namespace itself;
-    * `rename_namespace`—rename the existing namespace that has the name specified as the `namespace` option value, to the new name from the `renamed_namespace` option. This action may be useful when a common search index is created for multiple Foliant projects, and the index may remain incomplete for a long time during their building;
-    * `create_namespace`—create the new namespace with the name from the `namespace` option;
-    * `insert_items`—fill the namespace that is specified in the `namespace` option, with the content that should be indexed. Each data item added to the namespace corresponds a single Markdown file of the documentation project.
+* `drop_database` — fully remove the database that is specified as the value of the `database` option. Please be careful using this action when the single database is used to store multiple namespaces. Since this action is included to the default actions list, it’s recommended to use separate databases for each search index. The default list of actions assumes that in most cases it’s needed to remove and then fully rebuild the index, and wherein the database and the namespace may not exist;
+* `create_database` — create the new database with the name specified as the `database` option value;
+* `drop_namespace` — delete the namespace that is specified as the `namespace` option value. All `*_namespace` actions are applied to the existing database with the name from the `database` option;
+* `truncate_namespace` — remove all items from the namespace that is specified as the `namespace` option value, but keep the namespace itself;
+* `rename_namespace` — rename the existing namespace that has the name specified as the `namespace` option value, to the new name from the `renamed_namespace` option. This action may be useful when a common search index is created for multiple Foliant projects, and the index may remain incomplete for a long time during their building;
+* `create_namespace` — create the new namespace with the name from the `namespace` option;
+* `insert_items` — fill the namespace that is specified in the `namespace` option, with the content that should be indexed. Each data item added to the namespace corresponds a single Markdown file of the documentation project.
 
 `use_chapters`
 :   If set to `true` (by default), the preprocessor applies only to the files that are mentioned in the `chapters` section of the project config. Otherwise, the preprocessor applies to all Markdown files of the project.

@@ -13,7 +13,7 @@ Also this extension provides a simple working example of a client-side Web appli
 To install the preprocessor, run the command:
 
 ```bash
-$ pip install foliantcontrib.reindexer
+pip install foliantcontrib.reindexer
 ```
 
 To use an example of a client-side Web application for searching, download [these HTML, CSS, and JS files](https://github.com/foliant-docs/foliantcontrib.reindexer/tree/master/webapp_example/) and open the file `index.html` in your Web browser.
@@ -52,13 +52,15 @@ preprocessors:
             - '^([^\/]+)': '/\g<1>'
         require_env: false
         targets: []
+        split_by_headers: false
+        split_headers_level: 2
 ```
 
 `reindexer_url`
-:   URL of your Reindexer instance. “Root” server URL should be used here, do not add any endpoints such as `/api/v1/db` to it.
+:   URL of your Reindexer instance. "Root" server URL should be used here, do not add any endpoints such as `/api/v1/db` to it.
 
 `insert_max_bytes`
-:   Reindexer itself or a proxy server may limit the available size of request body. Use this option, if it’s needed to split a large amount of content for indexing into several chunks, so each of them will be sent in a separate request. The value of this option represents maximum size of HTTP POST request body in bytes. Allowed values are positive integers starting from `1024`, and `0` (default) meaning no limits.
+:   Reindexer itself or a proxy server may limit the available size of request body. Use this option, if it's needed to split a large amount of content for indexing into several chunks, so each of them will be sent in a separate request. The value of this option represents maximum size of HTTP POST request body in bytes. Allowed values are positive integers starting from `1024`, and `0` (default) meaning no limits.
 
 `database`
 :   Name of the database that is used to store your search index.
@@ -70,18 +72,18 @@ preprocessors:
 :   New namespace name to be applied if the `rename` option is used; see below.
 
 `fulltext_config`
-:   The value of the `config` field that refers to the description of the composite fulltext index over the `title` and `content` data fields. Used data structure is described below. [Fulltext indexes config options](https://github.com/Restream/reindexer/blob/master/cpp_src/server/contrib/server.md#fulltextconfig) are listed in the Reindexer’s official documentation.
+:   The value of the `config` field that refers to the description of the composite fulltext index over the `title` and `content` data fields. Used data structure is described below. [Fulltext indexes config options](https://github.com/Restream/reindexer/blob/master/cpp_src/server/contrib/server.md#fulltextconfig) are listed in the Reindexer's official documentation.
 
 `actions`
 :   Sequence of actions that the preprocessor should to perform. Available item values are:
 
-* `drop_database` — fully remove the database that is specified as the value of the `database` option. Please be careful using this action when the single database is used to store multiple namespaces. Since this action is included to the default actions list, it’s recommended to use separate databases for each search index. The default list of actions assumes that in most cases it’s needed to remove and then fully rebuild the index, and wherein the database and the namespace may not exist;
+* `drop_database` — fully remove the database that is specified as the value of the `database` option. Please be careful using this action when the single database is used to store multiple namespaces. Since this action is included to the default actions list, it's recommended to use separate databases for each search index. The default list of actions assumes that in most cases it's needed to remove and then fully rebuild the index, and wherein the database and the namespace may not exist;
 * `create_database` — create the new database with the name specified as the `database` option value;
 * `drop_namespace` — delete the namespace that is specified as the `namespace` option value. All `*_namespace` actions are applied to the existing database with the name from the `database` option;
 * `truncate_namespace` — remove all items from the namespace that is specified as the `namespace` option value, but keep the namespace itself;
 * `rename_namespace` — rename the existing namespace that has the name specified as the `namespace` option value, to the new name from the `renamed_namespace` option. This action may be useful when a common search index is created for multiple Foliant projects, and the index may remain incomplete for a long time during their building;
 * `create_namespace` — create the new namespace with the name from the `namespace` option;
-* `insert_items` — fill the namespace that is specified in the `namespace` option, with the content that should be indexed. Each data item added to the namespace corresponds a single Markdown file of the documentation project.
+* `insert_items` — fill the namespace that is specified in the `namespace` option, with the content that should be indexed. Each data item added to the namespace corresponds to a single Markdown section (or file, depending on settings).
 
 `use_chapters`
 :   If set to `true` (by default), the preprocessor applies only to the files that are mentioned in the `chapters` section of the project config. Otherwise, the preprocessor applies to all Markdown files of the project.
@@ -93,7 +95,7 @@ preprocessors:
 :   If set to `true` (by default), HTML syntax constructions in the content converted to `plaintext` will be escaped by replacing `&` with `&amp;`, `<` with `&lt;`, `>` with `&gt;`, and `"` with `&quot;`.
 
 `url_transform`
-:   Sequence of rules to transform local paths of source Markdown files into URLs of target pages. Each rule should be a dictionary. Its data is passed to the [`re.sub()` method](https://docs.python.org/3/library/re.html#re.sub): key as the `pattern` argument, and value as the `repl` argument. The local path (possibly previously transformed) to the source Markdown file relative to the temporary working directory is passed as the `string` argument. The default value of the `url_transform` option is designed to be used to build static websites with MkDocs backend.
+:   Sequence of rules to transform local paths of source Markdown files into URLs of target pages. Each rule should be a dictionary. Its data is passed to the [`re.sub()` method](https://docs.python.org/3/library/re.html#re.sub): key as the `pattern` argument, and value as the `repl` argument. The local path (possibly previously transformed) to the source Markdown file relative to the temporary working directory is passed as the `string` argument. When `split_by_headers` is enabled, the preprocessor automatically adds anchors to section URLs (e.g., `page.html#section-anchor`). The default value of the `url_transform` option is designed to be used to build static websites with MkDocs backend.
 
 `require_env`
 :   If set to `true`, the `FOLIANT_REINDEXER` environment variable must be set to allow the preprocessor to perform any operations with the database and the namespace managed by Reindexer. This flag may be useful in CI/CD jobs.
@@ -101,17 +103,82 @@ preprocessors:
 `targets`
 :   Allowed targets for the preprocessor. If not specified (by default), the preprocessor applies to all targets.
 
+`split_by_headers`
+:   If set to `true`, the preprocessor splits each Markdown document into sections by headings of the specified level. Each section becomes a separate search index item with its own URL (including an anchor) and title. This improves search accuracy by allowing users to jump directly to relevant sections instead of entire documents. Default: `false`.
+
+`split_headers_level`
+:   Defines which heading level to use for splitting documents when `split_by_headers` is enabled. Valid values: `1` through `6`. For example, `2` means splitting by `<h2>` headings (`##` in Markdown). Default: `2`.
+
+`base_url`
+:   Prepended to the beginning of `url`. Useful when absolute links are needed. For example, if `base_url: https://example.com`, all URLs will become absolute, like `https://example.com/section/file`.
+
+`doc_type`
+:   The document type can be specified via a preprocessor parameter or the `REINDEXER_DOC_TYPE` environment variable. If not specified, the `title` defined in the project configuration file is used.
+
+`use_strip_markdown`
+:   Enable Markdown syntax removal from the content.
+
+`preserve_code_blocks`
+:    Keep the content inside code blocks intact instead of replacing it with a placeholder.
+
+`preserve_links_text`
+:   Keep the visible text of links instead of removing it entirely.
+
 ## Usage
 
 The preprocessor reads each source Markdown file and prepares three fields for indexing:
 
 * `url`—target page URL. This field is used as the primary key, so it must be unique;
-* `title`—document title, it’s taken from the first heading of source Markdown content;
+* `title`—document title, it's taken from the first heading of source Markdown content;
 * `content`—source Markdown content, optionally converted into plain text or HTML.
 
-When all the files are processed, the preprocessor calls Reindexer API to insert data items (each item corresponds a single Markdown file) into the specified namespace.
+When all the files are processed, the preprocessor calls Reindexer API to insert data items (each item corresponds to a single Markdown file) into the specified namespace.
 
-Also the preprocessor may call Reindexer API to manipulate the database or namespace, e.g. to delete previously created search index.
+### Document splitting by headings
+
+When `split_by_headers: true` is enabled, the preprocessor intelligently splits each document into sections based on heading levels:
+
+- **Section extraction**: The document is divided wherever a heading of the specified level (`split_headers_level`) appears.
+- **URL anchors**: Each section receives a URL with a unique anchor (e.g., `page.html#level2-configuration`), allowing direct linking.
+
+#### Example: Splitting by H2 headings
+
+Given a Markdown file:
+
+```markdown
+# Main Title
+
+## Installation
+Installation steps go here...
+
+## Configuration
+Configuration details...
+
+### Advanced Settings
+Nested subsection (not a split point)
+```
+
+With `split_by_headers: true` and `split_headers_level: 2`, two index entries are created:
+- Entry 1: URL `page.html#level2-installation`, Title `"Installation"`, Content `"Installation steps go here..."`
+- Entry 2: URL `page.html#level2-configuration`, Title `"Configuration"`, Content `"Configuration details...\n\n### Advanced Settings\nNested subsection..."`
+
+The nested H3 heading is included as part of the H2 section's content.
+
+#### Performance considerations
+
+Splitting documents by headings:
+- Increases the number of index entries (one per section)
+- Requires more storage space
+- Uses more memory during indexing
+- Significantly improves search precision and user experience
+
+Adjust `insert_max_bytes` if you encounter request size limits when indexing many sections.
+
+### Manipulating the database and namespace
+
+The preprocessor may call Reindexer API to manipulate the database or namespace, e.g., to delete previously created search index. The sequence of actions is controlled by the `actions` option.
+
+### Performing searches
 
 You may perform custom search requests to Reindexer API.
 
@@ -132,7 +199,6 @@ The [simple client-side Web application example](https://github.com/foliant-docs
     ],
     "limit": 50
 }
-
 ```
 
 To learn how to write efficient queries to Reindexer, you may need to refer to its official documentation on topics: [general use](https://github.com/Restream/reindexer/blob/master/readme.md), [fulltext search](https://github.com/Restream/reindexer/blob/master/fulltext.md), [HTTP REST API](https://github.com/Restream/reindexer/blob/master/cpp_src/server/contrib/server.md).

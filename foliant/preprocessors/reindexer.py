@@ -1,20 +1,24 @@
-'''
+"""
 Preprocessor for Foliant documentation authoring tool.
 
 Calls Reindexer HTTP REST API to generate a search index
 based on Markdown content.
-'''
+"""
 
 import re
 import json
+import time
+import frontmatter
 from os import getenv
 from pathlib import Path
 from urllib import request
 from urllib.error import HTTPError
 from markdown import markdown
 from bs4 import BeautifulSoup
+from .reindexer_utils.markdown_cleaner import clean_markdown
 
 from foliant.preprocessors.base import BasePreprocessor
+from foliant.preprocessors import unescapecode
 
 
 class Preprocessor(BasePreprocessor):
@@ -23,24 +27,29 @@ class Preprocessor(BasePreprocessor):
         'insert_max_bytes': 0,
         'database': '',
         'namespace': '',
+        'doc_type': '',
         'namespace_renamed': '',
+        'namespace_type': '',
         'fulltext_config': {},
         'actions': [
-            'drop_database',
-            'create_database',
-            'create_namespace',
             'insert_items'
         ],
         'use_chapters': True,
         'format': 'plaintext',
+        'use_strip_markdown': True,
+        'preserve_code_blocks': True,
+        'preserve_links_text': True,
         'escape_html': True,
         'url_transform': [
-            {'\/?index\.md$': '/'},
-            {'\.md$': '/'},
-            {'^([^\/]+)': '/\g<1>'}
+            {'\/?index\.md$': '/'},  # noqa: W605
+            {'\.md$': '/'},  # noqa: W605
+            {'^([^\/]+)': '/\g<1>'}  # noqa: W605
         ],
+        'base_url': '',
         'require_env': False,
-        'targets': []
+        'targets': [],
+        'split_by_headers': False,
+        'split_headers_level': 2
     }
 
     def __init__(self, *args, **kwargs):
@@ -50,13 +59,16 @@ class Preprocessor(BasePreprocessor):
             self.options['insert_max_bytes'] = float('inf')
 
         self._db_endpoint = f'{self.options["reindexer_url"].rstrip("/")}/api/v1/db'
+        self.doc_type_env = getenv('REINDEXER_DOC_TYPE')
 
         self.logger = self.logger.getChild('reindexer')
 
         self.logger.debug(f'Preprocessor inited: {self.__dict__}')
 
-    def _get_url(self, markdown_file_path: str) -> str:
+    def _get_url(self, markdown_file_path: str, anchor: str = '') -> str:
         url = str(markdown_file_path.relative_to(self.working_dir))
+        if self.options['base_url']:
+            url = self.options['base_url'] + url
         url_transformation_rules = self.options['url_transform']
 
         if not isinstance(url_transformation_rules, list):
@@ -65,6 +77,9 @@ class Preprocessor(BasePreprocessor):
         for url_transformation_rule in url_transformation_rules:
             for pattern, replacement in url_transformation_rule.items():
                 url = re.sub(pattern, replacement, url)
+
+        if anchor:
+            url = f'{url}#{anchor}'
 
         return url
 
@@ -114,6 +129,111 @@ class Preprocessor(BasePreprocessor):
 
     def _escape_html(self, content: str) -> str:
         return content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+
+    def _split_markdown_by_headers(self, markdown_content: str) -> list:
+        """
+        Divides the Markdown document into sections according to the headings of the specified level.
+
+        Returns a list of dictionaries with the keys: 'title', 'content', 'anchor', 'level'
+        """
+        lines = markdown_content.split('\n')
+        sections = []
+
+        header_pattern = re.compile(r'^(\#{1,6})\s+(.+?)(?:\s+\{\#(\S+)\})?\s*$')
+        target_level = self.options['split_headers_level']
+
+        current_section = {
+            'title': '',
+            'content': [],
+            'anchor': '',
+            'level': 1
+        }
+
+        def create_anchor(title: str) -> str:
+            anchor = re.sub(r'[^\w\u0400-\u04FF\-]', '-', title.lower())
+            anchor = re.sub(r'-+', '-', anchor).strip('-')
+            return anchor
+
+        def finalize_section():
+            if current_section and len(current_section['content']):
+                sections.append({
+                    'title': current_section['title'],
+                    'content': '\n'.join(current_section['content']).strip(),
+                    'anchor': current_section['anchor'],
+                    'level': current_section['level']
+                })
+
+        for line in lines:
+            header_match = header_pattern.match(line)
+
+            if header_match:
+                level = len(header_match.group(1))
+                title = header_match.group(2).strip()
+                custom_anchor = header_match.group(3)
+                anchor = custom_anchor or create_anchor(title)
+
+                if level == 1:
+                    current_section = {
+                        'title': title,
+                        'anchor': '',
+                        'content': [],
+                        'level': 1
+                    }
+                    finalize_section()
+                if level == target_level:
+                    finalize_section()
+                    current_section = {
+                        'title': title,
+                        'content': [],
+                        'anchor': anchor,
+                        'level': level
+                    }
+                else:
+                    current_section['content'].append(line)
+            else:
+                current_section['content'].append(line)
+
+        finalize_section()
+
+        return sections
+
+    def _process_content(self, markdown_content: str, file_path: Path) -> list:
+        """
+        Processes the contents of the file, dividing it into sections if necessary.
+        Returns a list of items to index.
+        """
+        elements = []
+
+        if self.options['split_by_headers']:
+            self.logger.debug(f'Splitting document by headers (level {self.options["split_headers_level"]})')
+            sections = self._split_markdown_by_headers(markdown_content)
+            self.logger.debug(f'Document split into {len(sections)} sections')
+
+            for section in sections:
+                elements.append({
+                    'url': self._get_url(file_path, section['anchor']),
+                    'title': section['title'],
+                    'content': section['content'],
+                    'metadata': {
+                        'original_title': section.get('original_title', ''),
+                        'section_level': section.get('level', 0),
+                        'source_file': str(file_path),
+                        'is_section': True
+                    }
+                })
+
+        else:
+            elements.append({
+                'url': self._get_url(file_path),
+                'title': self._get_title(markdown_content) or Path(file_path).stem,
+                'content': markdown_content,
+                'metadata': {
+                    'source_file': str(file_path),
+                    'is_section': False
+                }
+            })
+
+        return elements
 
     def _http_request(
         self,
@@ -173,8 +293,8 @@ class Preprocessor(BasePreprocessor):
 
         else:
             error_message = 'Failed to drop database'
-            self.logger.error(f'{error_message}')
-            raise RuntimeError(f'{error_message}')
+            self.logger.error(error_message)
+            raise RuntimeError(error_message)
 
         return None
 
@@ -211,8 +331,8 @@ class Preprocessor(BasePreprocessor):
 
         else:
             error_message = 'Failed to create database'
-            self.logger.error(f'{error_message}')
-            raise RuntimeError(f'{error_message}')
+            self.logger.error(error_message)
+            raise RuntimeError(error_message)
 
         return None
 
@@ -242,8 +362,8 @@ class Preprocessor(BasePreprocessor):
 
         else:
             error_message = 'Failed to drop namespace'
-            self.logger.error(f'{error_message}')
-            raise RuntimeError(f'{error_message}')
+            self.logger.error(error_message)
+            raise RuntimeError(error_message)
 
         return None
 
@@ -275,14 +395,14 @@ class Preprocessor(BasePreprocessor):
 
         else:
             error_message = 'Failed to truncate namespace'
-            self.logger.error(f'{error_message}')
-            raise RuntimeError(f'{error_message}')
+            self.logger.error(error_message)
+            raise RuntimeError(error_message)
 
         return None
 
     def _rename_namespace(self) -> None:
         request_url = (
-            f'{self._db_endpoint}/{self.options["database"]}/namespaces/{self.options["namespace"]}' +
+            f'{self._db_endpoint}/{self.options["database"]}/namespaces/{self.options["namespace"]}'
             f'/rename/{self.options["namespace_renamed"]}'
         )
 
@@ -301,8 +421,8 @@ class Preprocessor(BasePreprocessor):
 
         else:
             error_message = 'Failed to rename namespace'
-            self.logger.error(f'{error_message}')
-            raise RuntimeError(f'{error_message}')
+            self.logger.error(error_message)
+            raise RuntimeError(error_message)
 
         return None
 
@@ -325,6 +445,14 @@ class Preprocessor(BasePreprocessor):
                     "is_pk": True
                 },
                 {
+                    "name": "doc_type",
+                    "json_paths": [
+                        "doc_type"
+                    ],
+                    "field_type": "string",
+                    "index_type": "-"
+                },
+                {
                     "name": "title",
                     "json_paths": [
                         "title"
@@ -344,7 +472,9 @@ class Preprocessor(BasePreprocessor):
                     "name": "indexed_content",
                     "json_paths": [
                         "title",
-                        "content"
+                        "content",
+                        "doc_type",
+                        "url"
                     ],
                     "field_type": "composite",
                     "index_type": "text",
@@ -355,47 +485,56 @@ class Preprocessor(BasePreprocessor):
 
         request_url = f'{self._db_endpoint}/{self.options["database"]}/namespaces'
 
-        self.logger.debug(f'Requesting Reindexer API to create database, URL: {request_url}')
+        max_retries = self.options.get('create_namespace_retries', 3)
+        retry_delay_ms = self.options.get('create_namespace_retry_delay_ms', 1000)
 
-        response = self._http_request(
-            request_url,
-            'POST',
-            {
-                'Content-Type': 'application/json; charset=utf-8'
-            },
-            json.dumps(
-                namespace_definition,
-                ensure_ascii=False
-            ).encode('utf-8')
-        )
+        for attempt in range(max_retries):
+            self.logger.debug(f'Creating namespace, attempt {attempt + 1}/{max_retries}')
 
-        response_data = json.loads(response['data'].decode('utf-8'))
+            response = self._http_request(
+                request_url,
+                'POST',
+                {'Content-Type': 'application/json; charset=utf-8'},
+                json.dumps(namespace_definition, ensure_ascii=False).encode('utf-8')
+            )
 
-        self.logger.debug(f'Response received, status: {response["status"]}')
-        self.logger.debug(f'Response headers: {response["headers"]}')
-        self.logger.debug(f'Response data: {response_data}')
+            response_data = json.loads(response['data'].decode('utf-8'))
 
-        if response['status'] == 200:
-            self.logger.debug('Namespace created')
+            if response['status'] == 200:
+                self.logger.debug('Namespace created')
+                return None
 
-        elif response['status'] == 400 and response_data.get(
-            'description', ''
-        ) == f'Namespace \'{self.options["namespace"]}\' already exists':
-            self.logger.debug('Namespace already exists')
+            if response['status'] == 500 and attempt < max_retries - 1:
+                self.logger.warning(f'Got 500 error, retrying in {retry_delay_ms} ms...')
+                time.sleep(retry_delay_ms / 1000.0)
+            elif response['status'] == 400 and response_data.get(
+                'description', ''
+            ) == f'Namespace \'{self.options["namespace"]}\' already exists':
+                self.logger.debug('Namespace already exists')
+                return None
+            else:
+                error_message = f'Failed to create namespace: {response_data}'
+                self.logger.error(error_message)
+                raise RuntimeError(error_message)
 
-        else:
-            error_message = 'Failed to create namespace'
-            self.logger.error(f'{error_message}')
-            raise RuntimeError(f'{error_message}')
+    def _check_build_req(self, file_path):
+        """Check if file contains not_build: true in frontmatter"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                post = frontmatter.load(f)
 
-        return None
+            # Check for not_build: true
+            if post.metadata.get('not_build') is True:
+                return False, "contains not_build: true - build skipped"
+            return True, "passed validation"
+        except Exception as e:
+            return False, f"Error reading file: {e}"
 
     def _insert_items(self) -> None:
         if self.options['use_chapters']:
             self.logger.debug('Only files mentioned in chapters will be indexed')
 
             markdown_files_paths = self._get_chapters_paths()
-
         else:
             self.logger.debug('All files of the project will be indexed')
 
@@ -408,118 +547,112 @@ class Preprocessor(BasePreprocessor):
         for markdown_file_path in markdown_files_paths:
             self.logger.debug(f'Processing the file: {markdown_file_path}')
 
+            is_build_req, message = self._check_build_req(markdown_file_path)
+            if not is_build_req:
+                self.logger.debug(f'File {markdown_file_path} {message}')
+                continue
+
             with open(markdown_file_path, encoding='utf8') as markdown_file:
                 markdown_content = markdown_file.read()
 
             if markdown_content:
-                url = self._get_url(markdown_file_path)
-                title = self._get_title(markdown_content)
+                if self.config.get('escape_code', False):
+                    self.logger.debug(
+                        'Since escape_code mode is on, applying the unescape to the file content'
+                    )
+                    markdown_content = unescapecode.Preprocessor(
+                        self.context,
+                        self.logger,
+                        self.quiet,
+                        self.debug
+                    ).unescape(markdown_content)
 
-                if self.options['format'] == 'html' or self.options['format'] == 'plaintext':
-                    self.logger.debug(f'Converting source Markdown content to: {self.options["format"]}')
+                # We get the elements (sections) for indexing
+                elements = self._process_content(markdown_content, markdown_file_path)
 
-                    content = markdown(markdown_content)
+                for element in elements:
+                    url = element['url']
+                    title = element['title']
+                    content = element['content']
+                    doc_type = "untyped"
+                    if not self.options['doc_type'] and self.doc_type_env:
+                        doc_type = self.doc_type_env
+                    elif self.options['doc_type'] != '':
+                        doc_type = self.options['doc_type']
+                    elif self.context.get('config', {}).get('title'):
+                        doc_type = self.context['config']['title']
 
-                    if self.options['format'] == 'plaintext':
-                        soup = BeautifulSoup(content, 'lxml')
+                    # HTML/plaintext
+                    if self.options['format'] == 'html' or self.options['format'] == 'plaintext':
+                        html_content = markdown(content)
 
-                        for non_text_node in soup(['style', 'script']):
-                            non_text_node.extract()
-
-                        content = soup.get_text()
-
-                        if self.options['escape_html']:
-                            self.logger.debug('Escaping HTML syntax')
-
-                            if title:
-                                title = self._escape_html(title)
-
-                            content = self._escape_html(content)
-
-                else:
-                    self.logger.debug('Leaving source Markdown content unchanged')
-
-                    content = markdown_content
-
-                self.logger.debug(f'Adding new item, URL: {url}, title: {title}')
-
-                def _prepare_item(url: str, title: str, content: str) -> bytes:
-                    return json.dumps(
-                        {
-                            'url': url,
-                            'title': title,
-                            'content': content
-                        },
-                        ensure_ascii=False
-                    ).encode('utf-8')
-
-                item = _prepare_item(url, title, content)
-
-                self.logger.debug(
-                    'Maximum data size of items that can be inserted with a single API request: ' +
-                    f'{self.options["insert_max_bytes"]} bytes'
-                )
-
-                if self.options['insert_max_bytes'] < float('inf'):
-                    item_size = len(item)
-
-                    if item_size > self.options['insert_max_bytes']:
-                        self.logger.warning(
-                            f'Item size exceeds limit per request: {item_size} bytes, URL key: {url}'
-                        )
-
-                        encoded_content = content.encode('utf-8')
-                        content_size = len(encoded_content)
-                        remaining_item_size = item_size - content_size
-
-                        if remaining_item_size >= self.options['insert_max_bytes']:
-                            self.logger.warning(
-                                'Item size excluding content also exceeds limit: ' +
-                                f'{prepared_item_remaining_size} bytes, skipping'
-                            )
-
-                            continue
-
-                        else:
-                            trimmed_content_max_size = self.options['insert_max_bytes'] - remaining_item_size
-
-                            self.logger.warning(
-                                f'Content must be trimmed to maximum {trimmed_content_max_size} bytes'
-                            )
-
-                            trailing_byte_index = trimmed_content_max_size
-
-                            while trailing_byte_index > 0 and not (
-                                (encoded_content[trailing_byte_index] & 0xC0) != 0x80
-                            ):
-                                trailing_byte_index -= 1
-
-                            trimmed_content = encoded_content[:trailing_byte_index].decode('utf-8')
-
-                            if not trimmed_content:
-                                self.logger.warning(
-                                    'Content can only be trimmed to an empty string, skipping'
+                        if self.options['format'] == 'plaintext':
+                            if self.options.get('use_strip_markdown', True):
+                                content = clean_markdown(
+                                    content,
+                                    preserve_code_blocks=self.options.get('preserve_code_blocks', True),
+                                    preserve_links_text=self.options.get('preserve_links_text', True)
                                 )
 
-                                continue
+                                title = clean_markdown(
+                                    title,
+                                    preserve_code_blocks=self.options.get('preserve_code_blocks', True),
+                                    preserve_links_text=self.options.get('preserve_links_text', True)
+                                )
+                            else:
+                                soup = BeautifulSoup(html_content, 'lxml')
+                                soup = BeautifulSoup(content, 'lxml')
 
-                            item = _prepare_item(url, title, trimmed_content)
-                            item_size = len(item)
+                                for non_text_node in soup(['style', 'script']):
+                                    non_text_node.extract()
 
-                    if body_size + item_size > self.options['insert_max_bytes']:
-                        self.logger.debug(
-                            f'Size of items that are included into a single request: {body_size} bytes, ' +
-                            f'current item size: {item_size} bytes. ' +
-                            f'One more request will be used'
-                        )
+                                content = soup.get_text()
 
-                        requests_bodies.append(request_body)
-                        request_body = b''
-                        body_size = 0
+                                if self.options['escape_html']:
+                                    if title:
+                                        title = self._escape_html(title)
 
-                    body_size += item_size
+                                    content = self._escape_html(content)
+                        else:
+                            content = html_content
 
-                request_body += item
+                    self.logger.debug(f'Adding new item, URL: {url}, title: {title}')
+
+                    def _prepare_item(url: str, title: str, content: str, doc_type: str) -> bytes:
+                        return json.dumps(
+                            {
+                                'url': url,
+                                'title': title,
+                                'content': content,
+                                'doc_type': doc_type
+                            },
+                            ensure_ascii=False
+                        ).encode('utf-8')
+
+                    item = _prepare_item(url, title, content, doc_type)
+
+                    if self.options['insert_max_bytes'] < float('inf'):
+                        item_size = len(item)
+
+                        if item_size > self.options['insert_max_bytes']:
+                            self.logger.warning(
+                                f'Item size exceeds limit per request: {item_size} bytes, URL: {url}'
+                            )
+                            continue
+
+                        if body_size + item_size > self.options['insert_max_bytes']:
+                            self.logger.debug(
+                                f'Size of items in this request: {body_size} bytes. '
+                                f'Creating new request.'
+                            )
+
+                            requests_bodies.append(request_body)
+                            request_body = b''
+                            body_size = 0
+
+                        body_size += item_size
+
+                    request_body += item
 
             else:
                 self.logger.debug('It seems that the file has no content, skipping')
@@ -554,8 +687,8 @@ class Preprocessor(BasePreprocessor):
 
             if response['status'] != 200:
                 error_message = 'Failed to insert new content items into namespace'
-                self.logger.error(f'{error_message}')
-                raise RuntimeError(f'{error_message}')
+                self.logger.error(error_message)
+                raise RuntimeError(error_message)
 
             items_updated = response_data.get('updated', None)
 
@@ -571,7 +704,7 @@ class Preprocessor(BasePreprocessor):
 
         if not self.options['require_env'] or getenv(envvar) is not None:
             self.logger.debug(
-                f'Allowed targets: {self.options["targets"]}, ' +
+                f'Allowed targets: {self.options["targets"]}, '
                 f'current target: {self.context["target"]}'
             )
 
@@ -583,7 +716,6 @@ class Preprocessor(BasePreprocessor):
 
                 for action in actions:
                     self.logger.debug(f'Applying action: {action}')
-
                     if action == 'drop_database':
                         self._drop_database()
 
